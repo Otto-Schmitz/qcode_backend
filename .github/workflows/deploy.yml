@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'backend/**'
-      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 env:
@@ -52,7 +49,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile
+          file: ./Dockerfile
           push: true
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
@@ -65,9 +62,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Deploy Backend to VPS
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -81,28 +75,46 @@ jobs:
             # Login no GitHub Container Registry
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             
-            # Carregar variáveis de ambiente se .env existir
+            # Carregar variáveis de ambiente do .env
             if [ -f .env ]; then
-              export $(cat .env | grep -v '^#' | xargs)
+              set -a
+              source .env
+              set +a
+            else
+              echo "⚠️  Arquivo .env não encontrado em /opt/qrcode/.env"
+              exit 1
             fi
             
             # Pull da imagem mais recente do backend
             docker pull ${{ env.REGISTRY }}/${{ env.BACKEND_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
             
-            # Parar apenas o container do backend se existir
+            # Parar e remover container existente se houver
             docker stop qr_backend_prod || true
             docker rm qr_backend_prod || true
             
-            # Recriar o container do backend usando docker-compose
-            if [ -f docker-compose.prod.yml ]; then
-              export DOCKER_REGISTRY=${{ env.REGISTRY }}
-              export BACKEND_REPOSITORY=${{ env.BACKEND_REPOSITORY }}
-              export IMAGE_TAG=latest
-              docker-compose -f docker-compose.prod.yml up -d backend
-            else
-              echo "⚠️  docker-compose.prod.yml não encontrado. Container não será reiniciado."
-            fi
+            # Criar network se não existir
+            docker network create qr_network || true
+            
+            # Criar volume para storage se não existir
+            docker volume create backend_storage || true
+            
+            # Rodar novo container do backend usando variáveis do .env
+            docker run -d \
+              --name qr_backend_prod \
+              --restart unless-stopped \
+              --network qr_network \
+              -p 8000:8000 \
+              -v backend_storage:/app/storage \
+              -e DATABASE_URL="${DATABASE_URL}" \
+              -e SECRET_KEY="${SECRET_KEY}" \
+              -e ACCESS_TOKEN_EXPIRE_MINUTES="${ACCESS_TOKEN_EXPIRE_MINUTES:-43200}" \
+              -e AWS_S3_BUCKET="${AWS_S3_BUCKET}" \
+              -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+              -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+              -e AWS_REGION="${AWS_REGION:-us-east-2}" \
+              ${{ env.REGISTRY }}/${{ env.BACKEND_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
             
             # Limpar imagens antigas
             docker image prune -f
-
+            
+            echo "✅ Backend deployado com sucesso!"
