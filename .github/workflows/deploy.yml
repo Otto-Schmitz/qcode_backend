@@ -85,8 +85,31 @@ jobs:
               exit 1
             fi
             
-            # Pull da imagem mais recente do backend
-            docker pull ${{ env.REGISTRY }}/${{ env.BACKEND_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+            # Pull da imagem mais recente do backend com retry e timeout
+            MAX_RETRIES=5
+            RETRY_COUNT=0
+            IMAGE_NAME="${{ env.REGISTRY }}/${{ env.BACKEND_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest"
+            
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              echo "📥 Tentando baixar imagem (tentativa $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+              
+              # Tentar pull com timeout de 10 minutos
+              if timeout 600 docker pull "$IMAGE_NAME" 2>&1; then
+                echo "✅ Imagem baixada com sucesso"
+                break
+              else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  WAIT_TIME=$((RETRY_COUNT * 10))
+                  echo "⚠️  Tentativa $RETRY_COUNT falhou. Tentando novamente em ${WAIT_TIME} segundos..."
+                  sleep $WAIT_TIME
+                else
+                  echo "❌ Falha ao baixar imagem após $MAX_RETRIES tentativas"
+                  echo "💡 Dica: Verifique a conexão de rede ou tente novamente mais tarde"
+                  exit 1
+                fi
+              fi
+            done
             
             # Parar e remover container existente se houver
             docker stop qr_backend_prod || true
